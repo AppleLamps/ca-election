@@ -31,10 +31,10 @@ export async function fetchAndParseFeed(url: string): Promise<ResultsPayload> {
         race.raceTitle &&
         race.raceTitle.toLowerCase().includes("governor") &&
         race.raceTitle.toLowerCase().includes("statewide")
-    ) || data[0]; // Fallback to first element if not found
+    );
 
     if (!statewideRace) {
-      throw new Error("Invalid CA SOS feed: empty array");
+      throw new Error("Invalid CA SOS feed: statewide governor race not found");
     }
 
     // Extract reporting percentage (e.g., "73.5% (14,547 of 19,788) precincts reporting" -> "73.5%")
@@ -66,6 +66,10 @@ export async function fetchAndParseFeed(url: string): Promise<ResultsPayload> {
         pct: parsePct(c.Percent)
       };
     });
+
+    if (candidates.length === 0) {
+      throw new Error("No candidates found in CA SOS governor race");
+    }
 
     // Sort by votes descending
     candidates.sort((a, b) => b.votes - a.votes);

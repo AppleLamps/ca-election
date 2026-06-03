@@ -64,7 +64,7 @@ export default function Dashboard() {
           // Pre-populate with realistic historical points starting from baseline gap (6.2)
           const now = Date.now();
           const basePoints = [
-            { gap: 6.2, t: new Date(now - 1000 * 60 * 60 * 12).toISOString() }, // 12h ago
+            { gap: BASELINE_GAP, t: new Date(now - 1000 * 60 * 60 * 12).toISOString() }, // 12h ago
             { gap: 5.8, t: new Date(now - 1000 * 60 * 60 * 10).toISOString() },
             { gap: 5.1, t: new Date(now - 1000 * 60 * 60 * 8).toISOString() },
             { gap: 4.5, t: new Date(now - 1000 * 60 * 60 * 6).toISOString() },
@@ -283,7 +283,7 @@ export default function Dashboard() {
             strokeWidth="1"
             strokeDasharray="3,3"
           />
-          
+
           {/* Sparkline path */}
           <polyline
             fill="none"
@@ -326,12 +326,12 @@ export default function Dashboard() {
               <span>Live</span>
             </div>
           </div>
-          
+
           {/* Refresh Controls */}
           <div className="refresh-controls">
-            <button 
-              className="refresh-button" 
-              onClick={() => fetchResults(true)} 
+            <button
+              className="refresh-button"
+              onClick={() => fetchResults(true)}
               disabled={loading || countyLoading}
               aria-label="Refresh results now"
             >
@@ -341,8 +341,8 @@ export default function Dashboard() {
               </span>
             </button>
             <label className="toggle-container">
-              <input 
-                type="checkbox" 
+              <input
+                type="checkbox"
                 className="toggle-input"
                 checked={autoRefresh}
                 onChange={(e) => setAutoRefresh(e.target.checked)}
@@ -402,9 +402,9 @@ export default function Dashboard() {
             <section className="card county-drilldown">
               <h2 className="card-title">County Drill-Down</h2>
               <div className="drilldown-controls">
-                <select 
-                  className="county-select" 
-                  value={selectedCounty} 
+                <select
+                  className="county-select"
+                  value={selectedCounty}
                   onChange={handleCountyChange}
                   disabled={loading}
                   aria-label="Select a California county to view results"
@@ -416,8 +416,8 @@ export default function Dashboard() {
                     </option>
                   ))}
                 </select>
-                <button 
-                  className="reset-button" 
+                <button
+                  className="reset-button"
                   onClick={handleResetStatewide}
                   disabled={!selectedCounty || loading}
                 >
@@ -458,8 +458,8 @@ export default function Dashboard() {
                     const animationDelay = `${index * 50}ms`;
 
                     return (
-                      <div 
-                        key={candidate.name} 
+                      <div
+                        key={candidate.name}
                         className={`candidate-row ${isPromoted ? "promoted" : ""}`}
                         style={{ animationDelay }}
                       >
@@ -478,8 +478,8 @@ export default function Dashboard() {
                           )}
                         </div>
                         <div className="bar-col" aria-hidden="true">
-                          <div 
-                            className={`vote-bar vote-bar-${candidate.party}`} 
+                          <div
+                            className={`vote-bar vote-bar-${candidate.party}`}
                             style={{ width: barWidth }}
                           />
                         </div>
@@ -546,7 +546,7 @@ export default function Dashboard() {
                   {selectedCounty ? `${selectedCounty} Party Share` : "Statewide Party Share"}
                 </h2>
               </div>
-              
+
               {loading || countyLoading ? (
                 <div className="skeleton-shimmer" style={{ height: "110px", width: "100%" }} />
               ) : partySplit ? (
@@ -572,10 +572,10 @@ export default function Dashboard() {
       <footer className="footer-disclaimers">
         <div className="disclaimer-item">
           Numbers are pulled from a live feed and may lag or vary by outlet. Verify against the California Secretary of State at{" "}
-          <a 
-            href="https://electionresults.sos.ca.gov" 
-            target="_blank" 
-            rel="noopener noreferrer" 
+          <a
+            href="https://electionresults.sos.ca.gov"
+            target="_blank"
+            rel="noopener noreferrer"
             className="disclaimer-link"
           >
             https://electionresults.sos.ca.gov
