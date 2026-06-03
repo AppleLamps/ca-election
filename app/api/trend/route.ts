@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { KV_TREND_KEY } from "@/lib/constants";
 
 export const dynamic = "force-dynamic";
 
@@ -15,10 +16,9 @@ export async function GET() {
 
   try {
     const { kv } = await import("@vercel/kv");
-    const key = "ca_governor_2026_gap_trend";
 
     // Retrieve all items from the list
-    const rawTrend = await kv.lrange(key, 0, -1);
+    const rawTrend = await kv.lrange(KV_TREND_KEY, 0, -1);
 
     // Parse items. Vercel KV might return them as objects or strings depending on how they were written/retrieved.
     const trend = rawTrend.map(item => {

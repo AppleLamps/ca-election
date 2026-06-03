@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { ResultsPayload, getMockStatewideResults } from "@/lib/mockResults";
 import { fetchAndParseFeed } from "@/lib/adapters";
+import { parseParty, parseVotes, parsePct } from "@/lib/parsing";
+import { MAX_CANDIDATES } from "@/lib/constants";
 import { OpenRouter } from "@openrouter/agent";
 
 export const dynamic = "force-dynamic";
@@ -12,7 +14,7 @@ const CACHE_TTL_MS = 30000; // 30 seconds revalidation window
 
 async function fetchLLMResults(apiKey: string): Promise<ResultsPayload> {
   const model = process.env.LLM_MODEL || "google/gemini-3.1-flash-lite";
-  
+
   const client = new OpenRouter({
     apiKey: apiKey
   });
@@ -39,6 +41,10 @@ If actual 2026 results are not yet fully compiled or available, synthesize highl
 
   const result = client.callModel({
     model,
+    // Enable OpenRouter's web search plugin so the model actually retrieves
+    // live results instead of answering from training data. This is the typed
+    // equivalent of the ":online" model suffix.
+    plugins: [{ id: "web", maxResults: 5 }],
     instructions: "You are a precise data extraction service. You always output valid, parseable JSON matching the requested schema exactly, with no conversational filler or markdown fences.",
     input: prompt,
     temperature: 0.1
@@ -75,30 +81,16 @@ If actual 2026 results are not yet fully compiled or available, synthesize highl
     throw new Error("Parsed LLM JSON is missing candidates array");
   }
 
-  const candidates = parsed.candidates.map((c: any) => {
+  const candidates = parsed.candidates.slice(0, MAX_CANDIDATES).map((c: any) => {
     const name = String(c.name || "").trim();
     if (!name) throw new Error("Candidate name is missing in LLM response");
 
-    let party = String(c.party || "I").toUpperCase().trim();
-    if (party.startsWith("DEM") || party === "D") party = "D";
-    else if (party.startsWith("REP") || party.startsWith("GOP") || party === "R") party = "R";
-    else party = "I";
-
-    let votes = 0;
-    if (typeof c.votes === "number") {
-      votes = c.votes;
-    } else if (typeof c.votes === "string") {
-      votes = parseInt(c.votes.replace(/,/g, ""), 10) || 0;
-    }
-
-    let pct = 0;
-    if (typeof c.pct === "number") {
-      pct = c.pct;
-    } else if (typeof c.pct === "string") {
-      pct = parseFloat(c.pct.replace(/%/g, "")) || 0;
-    }
-
-    return { name, party: party as "D" | "R" | "I", votes, pct };
+    return {
+      name,
+      party: parseParty(c.party),
+      votes: parseVotes(c.votes),
+      pct: parsePct(c.pct)
+    };
   });
 
   return {
@@ -110,54 +102,68 @@ If actual 2026 results are not yet fully compiled or available, synthesize highl
   };
 }
 
+/**
+ * Resolves statewide results through the fallback chain:
+ * external feed -> OpenRouter LLM -> mock data, degrading to mock on any error.
+ * Shared by the public GET handler and the snapshot cron so neither has to
+ * make an HTTP round-trip to the other.
+ *
+ * `fromError` distinguishes the configured-mock case (deterministic, cacheable)
+ * from the error-fallback case (transient, should not be cached).
+ */
+export async function resolveStatewideResults(): Promise<{
+  results: ResultsPayload;
+  source: string;
+  fromError: boolean;
+}> {
+  const feedUrl = process.env.RESULTS_FEED_URL;
+  const openrouterApiKey = process.env.OPENROUTER_API_KEY || process.env.LLM_API_KEY;
+
+  try {
+    if (feedUrl) {
+      return { results: await fetchAndParseFeed(feedUrl), source: "feed", fromError: false };
+    }
+    if (openrouterApiKey) {
+      return { results: await fetchLLMResults(openrouterApiKey), source: "llm", fromError: false };
+    }
+    return { results: getMockStatewideResults(), source: "mock", fromError: false };
+  } catch (error) {
+    console.error("Error fetching live results, falling back to mock data:", error);
+    // Graceful degradation: Fall back to mock results on any failure
+    const results = getMockStatewideResults();
+    results.note = `Fallback active. (Error fetching live data: ${error instanceof Error ? error.message : "Unknown error"})`;
+    return { results, source: "mock-fallback", fromError: true };
+  }
+}
+
 export async function GET() {
   const now = Date.now();
-  
+
   // Return cached results if within TTL
   if (cachedResults && (now - cacheTimestamp < CACHE_TTL_MS)) {
     return NextResponse.json(cachedResults, {
       headers: {
-        "Cache-Control": "public, s-maxage=30, stale-while-revalidate=30"
+        "Cache-Control": "public, s-maxage=30, stale-while-revalidate=30",
+        "X-Data-Source": "cache"
       }
     });
   }
 
-  const feedUrl = process.env.RESULTS_FEED_URL;
-  const openrouterApiKey = process.env.OPENROUTER_API_KEY || process.env.LLM_API_KEY;
+  const { results, source, fromError } = await resolveStatewideResults();
 
-  let results: ResultsPayload;
-  let usedSource = "mock";
-
-  try {
-    if (feedUrl) {
-      // 1. Try External Feed
-      results = await fetchAndParseFeed(feedUrl);
-      usedSource = "feed";
-    } else if (openrouterApiKey) {
-      // 2. Try OpenRouter LLM Fallback
-      results = await fetchLLMResults(openrouterApiKey);
-      usedSource = "llm";
-    } else {
-      // 3. Serve Mock Data
-      results = getMockStatewideResults();
-      usedSource = "mock";
-    }
-  } catch (error) {
-    console.error("Error fetching live results, falling back to mock data:", error);
-    // Graceful degradation: Fall back to mock results on any failure
-    results = getMockStatewideResults();
-    results.note = `Fallback active. (Error fetching live data: ${error instanceof Error ? error.message : "Unknown error"})`;
-    usedSource = "mock-fallback";
+  // Only cache real results. An error-fallback should be retried on the next
+  // request rather than pinning mock data for the full TTL window.
+  if (!fromError) {
+    cachedResults = results;
+    cacheTimestamp = now;
   }
-
-  // Update in-memory cache
-  cachedResults = results;
-  cacheTimestamp = now;
 
   return NextResponse.json(results, {
     headers: {
-      "Cache-Control": "public, s-maxage=30, stale-while-revalidate=30",
-      "X-Data-Source": usedSource
+      "Cache-Control": fromError
+        ? "no-store"
+        : "public, s-maxage=30, stale-while-revalidate=30",
+      "X-Data-Source": source
     }
   });
 }

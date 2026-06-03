@@ -15,7 +15,10 @@ export interface ResultsPayload {
   candidates: Candidate[];
 }
 
-export const BASELINE_GAP = 6.2; // Becerra (18.2) - Steyer (12.0) or whatever baseline is configured
+// Election-night baseline gap (Becerra over Steyer). The current mock gap is
+// intentionally narrower (~0.6) to model late-counted ballots closing it; the
+// hero delta compares the live gap against this baseline.
+export const BASELINE_GAP = 6.2;
 
 export const COUNTY_LIST = [
   "Alameda", "Alpine", "Amador", "Butte", "Calaveras", "Colusa", "Contra Costa",

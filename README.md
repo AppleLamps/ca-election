@@ -124,14 +124,15 @@ OPENROUTER_API_KEY="your-openrouter-api-key"
 LLM_MODEL="google/gemini-3.1-flash-lite"
 ```
 
-The server-side route handler will instruct OpenRouter to search for the latest results, return a precise JSON schema, and parse it defensively (stripping code fences, slicing JSON boundaries).
+The server-side route handler enables OpenRouter's web search plugin (`plugins: [{ id: "web" }]`) so the model retrieves live results instead of answering from training data, instructs it to return a precise JSON schema, and parses it defensively (stripping code fences, slicing JSON boundaries). Any `LLM_MODEL` works; no special model suffix is required.
 
 ### 4. Setting up Vercel KV & Cron
 
 To enable persistent gap tracking across all users:
 1. Create a **Vercel KV** database in your Vercel dashboard.
 2. Link the KV database to your project (this automatically injects `KV_REST_API_URL` and `KV_REST_API_TOKEN`).
-3. Deploy the project. The cron job defined in `vercel.json` will automatically trigger `/api/snapshot` every 5 minutes to record the gap.
+3. (Recommended) Set a `CRON_SECRET` environment variable to a long random string. When set, `/api/snapshot` rejects any request without a matching `Authorization: Bearer <CRON_SECRET>` header, which Vercel Cron sends automatically. This prevents the public endpoint from being spammed to churn the KV trend list. If unset, the endpoint stays open (fine for local development).
+4. Deploy the project. The cron job defined in `vercel.json` will automatically trigger `/api/snapshot` every 5 minutes to record the gap.
 
 ---
 

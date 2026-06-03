@@ -1,12 +1,9 @@
 "use client";
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { ResultsPayload, Candidate, COUNTY_LIST, BASELINE_GAP } from "@/lib/mockResults";
-
-// Helper to find candidate by case-insensitive name substring
-function findCandidate(candidates: Candidate[], nameSub: string): Candidate | undefined {
-  return candidates.find(c => c.name.toLowerCase().includes(nameSub.toLowerCase()));
-}
+import { ResultsPayload, COUNTY_LIST, BASELINE_GAP } from "@/lib/mockResults";
+import { findCandidate } from "@/lib/parsing";
+import { LOCAL_TREND_KEY } from "@/lib/constants";
 
 export default function Dashboard() {
   // State
@@ -23,6 +20,15 @@ export default function Dashboard() {
 
   // Refs for timers
   const refreshTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Track the selected county without making fetchResults depend on it. This
+  // keeps the statewide fetch callback stable so selecting a county does not
+  // re-trigger the mount effect (which would refetch statewide and flash the
+  // whole dashboard to skeletons).
+  const selectedCountyRef = useRef<string>("");
+  useEffect(() => {
+    selectedCountyRef.current = selectedCounty;
+  }, [selectedCounty]);
 
   // Fetch trend data
   const fetchTrend = useCallback(async (currentStatewide: ResultsPayload) => {
@@ -41,12 +47,20 @@ export default function Dashboard() {
       } else {
         // Fallback to localStorage
         setIsKvEnabled(false);
-        const localTrendStr = localStorage.getItem("ca_governor_2026_local_trend");
-        let localTrend = [];
+        const localTrendStr = localStorage.getItem(LOCAL_TREND_KEY);
+        let localTrend: { gap: number; t: string }[] = [];
 
         if (localTrendStr) {
-          localTrend = JSON.parse(localTrendStr);
-        } else {
+          try {
+            const parsed = JSON.parse(localTrendStr);
+            if (Array.isArray(parsed)) localTrend = parsed;
+          } catch {
+            // Corrupted value: ignore and rebuild from baseline below.
+            localTrend = [];
+          }
+        }
+
+        if (localTrend.length === 0) {
           // Pre-populate with realistic historical points starting from baseline gap (6.2)
           const now = Date.now();
           const basePoints = [
@@ -74,7 +88,7 @@ export default function Dashboard() {
           if (localTrend.length > 50) {
             localTrend = localTrend.slice(-50);
           }
-          localStorage.setItem("ca_governor_2026_local_trend", JSON.stringify(localTrend));
+          localStorage.setItem(LOCAL_TREND_KEY, JSON.stringify(localTrend));
         }
 
         setTrendPoints(localTrend);
@@ -99,7 +113,7 @@ export default function Dashboard() {
       setLastFetched(new Date().toLocaleTimeString("en-US", { hour12: false }));
 
       // If no county is selected, update current results
-      if (!selectedCounty) {
+      if (!selectedCountyRef.current) {
         setCurrentResults(data);
       }
 
@@ -111,7 +125,7 @@ export default function Dashboard() {
     } finally {
       setLoading(false);
     }
-  }, [selectedCounty, fetchTrend]);
+  }, [fetchTrend]);
 
   // Fetch county results
   const fetchCountyResults = useCallback(async (county: string) => {

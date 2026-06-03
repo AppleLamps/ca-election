@@ -1,13 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
+import { resolveStatewideResults } from "../results/route";
+import { findCandidate } from "@/lib/parsing";
+import { KV_TREND_KEY } from "@/lib/constants";
 
 export const dynamic = "force-dynamic";
 
-// Resolve candidate by case-insensitive name substring
-function findCandidate(candidates: any[], nameSub: string) {
-  return candidates.find(c => c.name.toLowerCase().includes(nameSub.toLowerCase()));
-}
-
 export async function GET(request: NextRequest) {
+  // Protect the write endpoint. When CRON_SECRET is configured, require the
+  // bearer token Vercel Cron sends so the endpoint cannot be spammed to churn
+  // the KV trend list. If unset, behavior is unchanged (open) for local dev.
+  const cronSecret = process.env.CRON_SECRET;
+  if (cronSecret) {
+    const auth = request.headers.get("authorization");
+    if (auth !== `Bearer ${cronSecret}`) {
+      return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
+    }
+  }
+
   // Check if Vercel KV is configured
   const kvUrl = process.env.KV_REST_API_URL;
   const kvToken = process.env.KV_REST_API_TOKEN;
@@ -23,17 +32,8 @@ export async function GET(request: NextRequest) {
     // Dynamically import @vercel/kv to avoid loading issues if not configured
     const { kv } = await import("@vercel/kv");
 
-    // Fetch current results by calling our own API
-    const protocol = request.headers.get("x-forwarded-proto") || "http";
-    const host = request.headers.get("host") || "localhost:3000";
-    const resultsUrl = `${protocol}://${host}/api/results`;
-
-    const res = await fetch(resultsUrl, { cache: "no-store" });
-    if (!res.ok) {
-      throw new Error(`Failed to fetch results from ${resultsUrl}: ${res.statusText}`);
-    }
-
-    const results = await res.json();
+    // Resolve current results in-process (no fragile HTTP self-call).
+    const { results } = await resolveStatewideResults();
 
     if (!results.candidates || !Array.isArray(results.candidates)) {
       throw new Error("Invalid results format: candidates array is missing");
@@ -55,11 +55,9 @@ export async function GET(request: NextRequest) {
       pctReporting: results.pctReporting
     };
 
-    const key = "ca_governor_2026_gap_trend";
-
     // Append to list and cap to last 500 points
-    await kv.rpush(key, JSON.stringify(dataPoint));
-    await kv.ltrim(key, -500, -1);
+    await kv.rpush(KV_TREND_KEY, JSON.stringify(dataPoint));
+    await kv.ltrim(KV_TREND_KEY, -500, -1);
 
     return NextResponse.json({
       success: true,

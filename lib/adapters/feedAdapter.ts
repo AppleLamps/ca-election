@@ -1,4 +1,6 @@
-import { ResultsPayload, Candidate, Party } from "../mockResults";
+import { ResultsPayload, Candidate } from "../mockResults";
+import { parseParty, parseVotes, parsePct } from "../parsing";
+import { MAX_CANDIDATES } from "../constants";
 
 /**
  * Fetches and parses the external election results feed.
@@ -51,35 +53,18 @@ export async function fetchAndParseFeed(url: string): Promise<ResultsPayload> {
       throw new Error("Invalid CA SOS feed structure: candidates is not an array");
     }
 
-    const candidates: Candidate[] = rawCandidates.map((c: any) => {
+    const candidates: Candidate[] = rawCandidates.slice(0, MAX_CANDIDATES).map((c: any) => {
       const name = String(c.Name || "").trim();
       if (!name) {
         throw new Error("Invalid candidate: missing Name");
       }
 
-      // Map party strings
-      let party: Party = "I";
-      const rawParty = String(c.Party || "").trim().toUpperCase();
-      if (rawParty.startsWith("DEM") || rawParty === "D") party = "D";
-      else if (rawParty.startsWith("REP") || rawParty.startsWith("GOP") || rawParty === "R") party = "R";
-
-      // Parse votes (e.g., "1,395" -> 1395)
-      let votes = 0;
-      if (typeof c.Votes === "number") {
-        votes = c.Votes;
-      } else if (typeof c.Votes === "string") {
-        votes = parseInt(c.Votes.replace(/,/g, ""), 10) || 0;
-      }
-
-      // Parse percentage (e.g., "18.2" -> 18.2)
-      let pct = 0;
-      if (typeof c.Percent === "number") {
-        pct = c.Percent;
-      } else if (typeof c.Percent === "string") {
-        pct = parseFloat(c.Percent.replace(/%/g, "")) || 0;
-      }
-
-      return { name, party, votes, pct };
+      return {
+        name,
+        party: parseParty(c.Party),
+        votes: parseVotes(c.Votes),
+        pct: parsePct(c.Percent)
+      };
     });
 
     // Sort by votes descending
@@ -105,36 +90,18 @@ export async function fetchAndParseFeed(url: string): Promise<ResultsPayload> {
     throw new Error("Invalid feed structure: candidates is not an array");
   }
 
-  const candidates: Candidate[] = rawCandidates.map((c: any) => {
+  const candidates: Candidate[] = rawCandidates.slice(0, MAX_CANDIDATES).map((c: any) => {
     const name = String(c.name || c.candidateName || "").trim();
     if (!name) {
       throw new Error("Invalid candidate: missing name");
     }
 
-    let party: Party = "I";
-    const rawParty = String(c.party || c.candidateParty || "").trim().toUpperCase();
-    if (rawParty.startsWith("DEM") || rawParty === "D") party = "D";
-    else if (rawParty.startsWith("REP") || rawParty.startsWith("GOP") || rawParty === "R") party = "R";
-
-    let votes = 0;
-    if (typeof c.votes === "number") {
-      votes = c.votes;
-    } else if (typeof c.votes === "string") {
-      votes = parseInt(c.votes.replace(/,/g, ""), 10) || 0;
-    }
-
-    let pct = 0;
-    if (typeof c.pct === "number") {
-      pct = c.pct;
-    } else if (typeof c.percent === "number") {
-      pct = c.percent;
-    } else if (typeof c.pct === "string") {
-      pct = parseFloat(c.pct.replace(/%/g, "")) || 0;
-    } else if (typeof c.percent === "string") {
-      pct = parseFloat(c.percent.replace(/%/g, "")) || 0;
-    }
-
-    return { name, party, votes, pct };
+    return {
+      name,
+      party: parseParty(c.party ?? c.candidateParty),
+      votes: parseVotes(c.votes),
+      pct: parsePct(c.pct ?? c.percent)
+    };
   });
 
   if (candidates.length === 0) {
@@ -144,11 +111,15 @@ export async function fetchAndParseFeed(url: string): Promise<ResultsPayload> {
   // Sort by votes descending
   candidates.sort((a, b) => b.votes - a.votes);
 
-  // Recalculate percentages if they are missing or all zero
+  // Recalculate percentages per-candidate when a pct is missing/zero but we
+  // have vote totals to derive it from. Handles feeds that supply pct for
+  // some candidates but not others.
   const totalVotes = candidates.reduce((sum, c) => sum + c.votes, 0);
-  if (totalVotes > 0 && candidates.every(c => c.pct === 0)) {
+  if (totalVotes > 0) {
     candidates.forEach(c => {
-      c.pct = Number(((c.votes / totalVotes) * 100).toFixed(1));
+      if (c.pct === 0) {
+        c.pct = Number(((c.votes / totalVotes) * 100).toFixed(1));
+      }
     });
   }
 
