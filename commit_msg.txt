@@ -1,3 +1,0 @@
-add: California 2026 Governor Primary Live Tracker dashboard
-
-Implement a production-ready, dark, high-density election results dashboard for the California 2026 Governor top-two primary. Features a server-side results API with OpenRouter (Gemini 3.1 Flash Lite) fallback, county drill-downs, and a Vercel KV gap trend sparkline.
