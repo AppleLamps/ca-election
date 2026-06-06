@@ -8,7 +8,10 @@ import { MAX_CANDIDATES } from "../constants";
  * the official California Secretary of State JSON feed format (array of races)
  * and generic flat JSON schemas.
  */
-export async function fetchAndParseFeed(url: string): Promise<ResultsPayload> {
+export async function fetchAndParseFeed(
+  url: string,
+  matchTerms: string[] = ["governor", "statewide"]
+): Promise<ResultsPayload> {
   const response = await fetch(url, {
     cache: "no-store",
     headers: {
@@ -25,16 +28,16 @@ export async function fetchAndParseFeed(url: string): Promise<ResultsPayload> {
 
   // 1. Handle official CA Secretary of State JSON feed (Array of races)
   if (Array.isArray(data)) {
-    // Find the statewide results block
-    const statewideRace = data.find(
-      (race: any) =>
-        race.raceTitle &&
-        race.raceTitle.toLowerCase().includes("governor") &&
-        race.raceTitle.toLowerCase().includes("statewide")
-    );
+    // Find the target race block by matching every term (case-insensitive).
+    const terms = matchTerms.map(t => t.toLowerCase());
+    const statewideRace = data.find((race: any) => {
+      if (!race.raceTitle) return false;
+      const title = String(race.raceTitle).toLowerCase();
+      return terms.every(t => title.includes(t));
+    });
 
     if (!statewideRace) {
-      throw new Error("Invalid CA SOS feed: statewide governor race not found");
+      throw new Error(`Invalid CA SOS feed: race not found for terms [${matchTerms.join(", ")}]`);
     }
 
     // Extract reporting percentage (e.g., "73.5% (14,547 of 19,788) precincts reporting" -> "73.5%")

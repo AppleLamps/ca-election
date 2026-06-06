@@ -17,13 +17,20 @@
  * observed share, making smoothing a no-op for them.
  */
 export const PRIOR_SHARES_BY_NAME: Record<string, number> = {
-  "Steve Hilton": 0.284,
-  "Xavier Becerra": 0.182,
-  "Tom Steyer": 0.176,
-  "Eleni Kounalakis": 0.121,
-  "Rob Bonta": 0.095,
-  "Lanhee Chen": 0.078,
-  "Betty Yee": 0.064,
+  // CA Governor 2026 (real reported shares as of the June 5 count)
+  "Xavier Becerra": 0.268,
+  "Steve Hilton": 0.264,
+  "Tom Steyer": 0.210,
+  "Chad Bianco": 0.108,
+  "Katie Porter": 0.045,
+  "Matt Mahan": 0.038,
+  "Antonio Villaraigosa": 0.012,
+  "Tony K. Thurmond": 0.007,
+  "Betty T. Yee": 0.005,
+  // LA City Mayor 2026 (name sets are disjoint, so a single merged map is safe)
+  "Karen Bass": 0.350,
+  "Spencer Pratt": 0.282,
+  "Nithya Raman": 0.249,
 };
 
 export function priorShareFor(name: string): number | null {

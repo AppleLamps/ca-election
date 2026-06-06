@@ -1,8 +1,8 @@
 "use client";
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { ResultsPayload, COUNTY_LIST, BASELINE_GAP } from "@/lib/mockResults";
-import { LOCAL_TREND_KEY } from "@/lib/constants";
+import { ResultsPayload, COUNTY_LIST } from "@/lib/mockResults";
+import { RACES, RACE_IDS, RaceId, DEFAULT_RACE, getRace } from "@/lib/races";
 import { runoffGap, analyzeStatewide } from "@/lib/projection";
 import { parseReportingFraction } from "@/lib/parsing";
 
@@ -14,6 +14,11 @@ type TrendPoint = {
 };
 
 export default function Dashboard() {
+  // Which race is shown. Drives the title, candidate set, baseline, trend keys,
+  // and which API the fetches hit.
+  const [activeRace, setActiveRace] = useState<RaceId>(DEFAULT_RACE);
+  const race = RACES[activeRace];
+
   // State
   const [statewideResults, setStatewideResults] = useState<ResultsPayload | null>(null);
   const [currentResults, setCurrentResults] = useState<ResultsPayload | null>(null);
@@ -39,10 +44,16 @@ export default function Dashboard() {
     selectedCountyRef.current = selectedCounty;
   }, [selectedCounty]);
 
+  // Same pattern for the active race: the fetch callbacks read the ref so they
+  // stay stable, and the race-switch effect updates it before refetching.
+  const activeRaceRef = useRef<RaceId>(DEFAULT_RACE);
+
   // Fetch trend data
   const fetchTrend = useCallback(async (currentStatewide: ResultsPayload) => {
     try {
-      const res = await fetch("/api/trend");
+      const raceId = activeRaceRef.current;
+      const localKey = getRace(raceId).localTrendKey;
+      const res = await fetch(`/api/trend?race=${raceId}`);
       if (!res.ok) throw new Error("Failed to fetch trend");
       const data = await res.json();
 
@@ -62,9 +73,9 @@ export default function Dashboard() {
         setIsKvEnabled(true);
         setTrendPoints(data.trend as TrendPoint[]);
       } else {
-        // Fallback to localStorage
+        // Fallback to localStorage (per-race key)
         setIsKvEnabled(false);
-        const localTrendStr = localStorage.getItem(LOCAL_TREND_KEY);
+        const localTrendStr = localStorage.getItem(localKey);
         let localTrend: TrendPoint[] = [];
 
         if (localTrendStr) {
@@ -94,7 +105,7 @@ export default function Dashboard() {
           if (localTrend.length > 50) {
             localTrend = localTrend.slice(-50);
           }
-          localStorage.setItem(LOCAL_TREND_KEY, JSON.stringify(localTrend));
+          localStorage.setItem(localKey, JSON.stringify(localTrend));
         }
 
         setTrendPoints(localTrend);
@@ -111,7 +122,7 @@ export default function Dashboard() {
     setError(null);
 
     try {
-      const res = await fetch("/api/results");
+      const res = await fetch(`/api/results?race=${activeRaceRef.current}`);
       if (!res.ok) throw new Error(`Statewide fetch failed: ${res.statusText}`);
       const data: ResultsPayload = await res.json();
 
@@ -151,10 +162,24 @@ export default function Dashboard() {
     }
   }, []);
 
-  // Initial Load
+  // Initial load and on race switch: sync the ref, then refetch for the race.
   useEffect(() => {
+    activeRaceRef.current = activeRace;
     fetchResults();
-  }, [fetchResults]);
+  }, [activeRace, fetchResults]);
+
+  // Switch races: reset county/view state and let the effect above refetch.
+  const handleRaceChange = (id: RaceId) => {
+    if (id === activeRace) return;
+    setSelectedCounty("");
+    selectedCountyRef.current = "";
+    setCountyError(null);
+    setStatewideResults(null);
+    setCurrentResults(null);
+    setTrendPoints([]);
+    setLoading(true);
+    setActiveRace(id);
+  };
 
   // Handle County Selection
   const handleCountyChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -219,17 +244,17 @@ export default function Dashboard() {
     // Margin holding the second runoff slot. Standings are sorted descending,
     // so this is non-negative.
     const currentGap = gapInfo.gap;
-    const delta = Number((currentGap - BASELINE_GAP).toFixed(1));
+    const delta = Number((currentGap - race.baselineGap).toFixed(1));
 
     let deltaClass = "delta-neutral";
     let deltaText = "Flat vs baseline";
     let deltaArrow = "=";
 
-    if (currentGap < BASELINE_GAP) {
+    if (currentGap < race.baselineGap) {
       deltaClass = "delta-climbing";
       deltaText = `${gapInfo.thirdName} closing`;
       deltaArrow = "▼";
-    } else if (currentGap > BASELINE_GAP) {
+    } else if (currentGap > race.baselineGap) {
       deltaClass = "delta-widening";
       deltaText = `${gapInfo.secondName} pulling away`;
       deltaArrow = "▲";
@@ -289,7 +314,7 @@ export default function Dashboard() {
 
     // Build the value range from everything we draw: observed gaps, the CI band
     // extremes, the projected gaps, and the baseline reference line.
-    const values: number[] = [BASELINE_GAP];
+    const values: number[] = [race.baselineGap];
     for (const p of trendPoints) {
       values.push(p.gap);
       if (p.ci95 !== undefined) {
@@ -325,7 +350,7 @@ export default function Dashboard() {
       .filter((s): s is string => s !== null);
 
     // Baseline Y coordinate
-    const baselineY = yOf(BASELINE_GAP);
+    const baselineY = yOf(race.baselineGap);
 
     // Last point coordinates
     const lastPoint = trendPoints[trendPoints.length - 1];
@@ -345,7 +370,7 @@ export default function Dashboard() {
         : "";
     const chartLabel = `Runoff-margin trend, ${direction}. Current margin ${lastPoint.gap.toFixed(
       1
-    )} percent against an election-night baseline of ${BASELINE_GAP} percent.${ciText}${projText}`;
+    )} percent against an election-night baseline of ${race.baselineGap} percent.${ciText}${projText}`;
 
     return (
       <div className="sparkline-svg-wrapper">
@@ -418,11 +443,26 @@ export default function Dashboard() {
 
   return (
     <div className="container">
+      {/* Race tabs */}
+      <nav className="race-tabs" role="tablist" aria-label="Select race">
+        {RACE_IDS.map((id) => (
+          <button
+            key={id}
+            role="tab"
+            aria-selected={id === activeRace}
+            className={`race-tab ${id === activeRace ? "active" : ""}`}
+            onClick={() => handleRaceChange(id)}
+          >
+            {RACES[id].tabLabel}
+          </button>
+        ))}
+      </nav>
+
       {/* Masthead */}
       <header className="masthead">
         <div className="masthead-top">
           <div className="title-group">
-            <h1 className="main-title">California Governor 2026 Primary Tracker</h1>
+            <h1 className="main-title">{race.title}</h1>
             <div className="live-indicator" aria-hidden="true">
               <div className="live-dot" />
               <span>Live</span>
@@ -463,11 +503,11 @@ export default function Dashboard() {
           <div className="meta-group">
             <div className="meta-item">
               <span className="meta-label">Primary Date:</span>
-              <span className="meta-value">June 2, 2026</span>
+              <span className="meta-value">{race.primaryDate}</span>
             </div>
             <div className="meta-item">
               <span className="meta-label">General Runoff:</span>
-              <span className="meta-value">Nov 3, 2026</span>
+              <span className="meta-value">{race.runoffDate}</span>
             </div>
             <div className="meta-item">
               <span className="meta-label">Reporting:</span>
@@ -485,7 +525,7 @@ export default function Dashboard() {
           <div className="meta-item">
             <span className="meta-label">View:</span>
             <span className="meta-value" style={{ color: "var(--amber)", fontWeight: "bold", textTransform: "uppercase" }}>
-              {selectedCounty ? `${selectedCounty} County` : "Statewide"}
+              {selectedCounty ? `${selectedCounty} County` : race.regionLabel}
             </span>
           </div>
         </div>
@@ -504,42 +544,44 @@ export default function Dashboard() {
         <main className="dashboard-grid">
           {/* Left Column: Standings & Drilldown */}
           <div className="column-left">
-            {/* County Drilldown */}
-            <section className="card county-drilldown">
-              <h2 className="card-title">County Drill-Down</h2>
-              <label htmlFor="county-select" className="control-label">
-                View results by county
-              </label>
-              <div className="drilldown-controls">
-                <select
-                  id="county-select"
-                  className="county-select"
-                  value={selectedCounty}
-                  onChange={handleCountyChange}
-                  disabled={loading}
-                  aria-label="Select a California county to view results"
-                >
-                  <option value="">-- Select County (Statewide) --</option>
-                  {COUNTY_LIST.map(county => (
-                    <option key={county} value={county}>
-                      {county}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  className="reset-button"
-                  onClick={handleResetStatewide}
-                  disabled={!selectedCounty || loading}
-                >
-                  Reset to Statewide
-                </button>
-              </div>
-              {countyError && (
-                <p className="county-notice" role="alert">
-                  {countyError}
-                </p>
-              )}
-            </section>
+            {/* County Drilldown (governor only) */}
+            {race.drilldownEnabled && (
+              <section className="card county-drilldown">
+                <h2 className="card-title">County Drill-Down</h2>
+                <label htmlFor="county-select" className="control-label">
+                  View results by county
+                </label>
+                <div className="drilldown-controls">
+                  <select
+                    id="county-select"
+                    className="county-select"
+                    value={selectedCounty}
+                    onChange={handleCountyChange}
+                    disabled={loading}
+                    aria-label="Select a California county to view results"
+                  >
+                    <option value="">-- Select County (Statewide) --</option>
+                    {COUNTY_LIST.map(county => (
+                      <option key={county} value={county}>
+                        {county}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className="reset-button"
+                    onClick={handleResetStatewide}
+                    disabled={!selectedCounty || loading}
+                  >
+                    Reset to Statewide
+                  </button>
+                </div>
+                {countyError && (
+                  <p className="county-notice" role="alert">
+                    {countyError}
+                  </p>
+                )}
+              </section>
+            )}
 
             {/* Top Two Banner */}
             {currentResults && (
@@ -554,7 +596,7 @@ export default function Dashboard() {
             <section className="card">
               <div className="card-header">
                 <h2 className="card-title">
-                  {selectedCounty ? `${selectedCounty} County Standings` : "Statewide Standings"}
+                  {selectedCounty ? `${selectedCounty} County Standings` : `${race.regionLabel} Standings`}
                 </h2>
                 <span className="mono-tabular" style={{ fontSize: "11px", color: "var(--faint)" }}>
                   {currentResults?.note}
@@ -623,7 +665,7 @@ export default function Dashboard() {
             {/* Hero Card: Second-Place Battle */}
             <section className="card hero-card" aria-live="polite">
               <div className="hero-stats">
-                <span className="hero-label">Statewide 2nd-Place Battle</span>
+                <span className="hero-label">{race.heroLabel}</span>
                 {!statewideResults ? (
                   <div className="skeleton-shimmer" style={{ height: "100px", width: "100%" }} />
                 ) : heroData ? (
@@ -670,7 +712,7 @@ export default function Dashboard() {
               <div className="sparkline-container">
                 <div className="sparkline-header">
                   <span>Runoff Margin Trend</span>
-                  <span>Election-night baseline: {BASELINE_GAP}%</span>
+                  <span>Election-night baseline: {race.baselineGap}%</span>
                 </div>
                 {drawSparkline()}
               </div>
@@ -680,7 +722,7 @@ export default function Dashboard() {
             <section className="card">
               <div className="card-header">
                 <h2 className="card-title">
-                  {selectedCounty ? `${selectedCounty} Party Share` : "Statewide Party Share"}
+                  {selectedCounty ? `${selectedCounty} Party Share` : `${race.regionLabel} Party Share`}
                 </h2>
               </div>
 
@@ -708,14 +750,14 @@ export default function Dashboard() {
       {/* Footer Disclaimers */}
       <footer className="footer-disclaimers">
         <div className="disclaimer-item">
-          Numbers are pulled from a live feed and may lag or vary by outlet. Verify against the California Secretary of State at{" "}
+          Numbers are pulled from a live feed and may lag or vary by outlet. Verify against the {race.verifyLabel} at{" "}
           <a
-            href="https://electionresults.sos.ca.gov"
+            href={race.verifyUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="disclaimer-link"
           >
-            https://electionresults.sos.ca.gov
+            {race.verifyUrl}
           </a>{" "}
           before publishing.
         </div>

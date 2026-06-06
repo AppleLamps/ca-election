@@ -1,9 +1,10 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { ResultsPayload, getMockStatewideResults } from "@/lib/mockResults";
 import { fetchAndParseFeed } from "@/lib/adapters";
 import { parseParty, parseVotes, parsePct, parseReportingFraction } from "@/lib/parsing";
 import { analyzeStatewide } from "@/lib/projection";
 import { MAX_CANDIDATES } from "@/lib/constants";
+import { RaceConfig, RaceId, getRace } from "@/lib/races";
 import { OpenRouter } from "@openrouter/agent";
 
 /**
@@ -30,12 +31,12 @@ function withProjection(results: ResultsPayload): ResultsPayload {
 
 export const dynamic = "force-dynamic";
 
-// Simple in-memory cache for the serverless instance to prevent hammering external feeds
-let cachedResults: ResultsPayload | null = null;
-let cacheTimestamp = 0;
+// Simple in-memory cache per race for the serverless instance to prevent
+// hammering external feeds. Keyed by RaceId so the two races never clobber.
+const cache = new Map<RaceId, { results: ResultsPayload; ts: number }>();
 const CACHE_TTL_MS = 30000; // 30 seconds revalidation window
 
-async function fetchLLMResults(apiKey: string): Promise<ResultsPayload> {
+async function fetchLLMResults(apiKey: string, race: RaceConfig): Promise<ResultsPayload> {
   const model = process.env.LLM_MODEL || "google/gemini-3.1-flash-lite";
 
   const client = new OpenRouter({
@@ -43,8 +44,8 @@ async function fetchLLMResults(apiKey: string): Promise<ResultsPayload> {
   });
 
   const prompt = `
-You are a high-fidelity data extraction bot. Search the web for the latest, official or semi-official election results for the California 2026 Governor top-two "jungle" primary (held June 2, 2026).
-Extract the vote counts, percentages, and reporting percentage for the major candidates, especially Xavier Becerra (D), Tom Steyer (D), and Steve Hilton (R).
+You are a high-fidelity data extraction bot. Search the web for the latest, official or semi-official election results for the ${race.llmRaceName}.
+Extract the vote counts, percentages, and reporting percentage for the major candidates, especially ${race.llmCandidatesOfInterest}.
 
 Return ONLY a raw JSON object matching the following TypeScript interface. Do NOT include any markdown formatting, code block fences (like \`\`\`json), or extra text outside the JSON.
 
@@ -144,37 +145,40 @@ Do NOT fabricate, estimate, or synthesize results. If you cannot find real, sour
  * `fromError` distinguishes the configured-mock case (deterministic, cacheable)
  * from the error-fallback case (transient, should not be cached).
  */
-export async function resolveStatewideResults(): Promise<{
+export async function resolveStatewideResults(raceId: RaceId = "governor"): Promise<{
   results: ResultsPayload;
   source: string;
   fromError: boolean;
 }> {
-  const feedUrl = process.env.RESULTS_FEED_URL;
+  const race = getRace(raceId);
+  const feedUrl = process.env[race.feedEnvVar];
   const openrouterApiKey = process.env.OPENROUTER_API_KEY || process.env.LLM_API_KEY;
 
   try {
     if (feedUrl) {
-      return { results: withProjection(await fetchAndParseFeed(feedUrl)), source: "feed", fromError: false };
+      return { results: withProjection(await fetchAndParseFeed(feedUrl, race.feedMatchTerms)), source: "feed", fromError: false };
     }
     if (openrouterApiKey) {
-      return { results: withProjection(await fetchLLMResults(openrouterApiKey)), source: "llm", fromError: false };
+      return { results: withProjection(await fetchLLMResults(openrouterApiKey, race)), source: "llm", fromError: false };
     }
-    return { results: withProjection(getMockStatewideResults()), source: "mock", fromError: false };
+    return { results: withProjection(getMockStatewideResults(race)), source: "mock", fromError: false };
   } catch (error) {
-    console.error("Error fetching live results, falling back to mock data:", error);
+    console.error(`Error fetching live results for ${race.id}, falling back to mock data:`, error);
     // Graceful degradation: Fall back to mock results on any failure
-    const results = getMockStatewideResults();
+    const results = getMockStatewideResults(race);
     results.note = `Fallback active. (Error fetching live data: ${error instanceof Error ? error.message : "Unknown error"})`;
     return { results: withProjection(results), source: "mock-fallback", fromError: true };
   }
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const raceId = getRace(new URL(request.url).searchParams.get("race")).id;
   const now = Date.now();
 
-  // Return cached results if within TTL
-  if (cachedResults && (now - cacheTimestamp < CACHE_TTL_MS)) {
-    return NextResponse.json(cachedResults, {
+  // Return cached results if within TTL (per race)
+  const cached = cache.get(raceId);
+  if (cached && (now - cached.ts < CACHE_TTL_MS)) {
+    return NextResponse.json(cached.results, {
       headers: {
         "Cache-Control": "public, s-maxage=30, stale-while-revalidate=30",
         "X-Data-Source": "cache"
@@ -182,13 +186,12 @@ export async function GET() {
     });
   }
 
-  const { results, source, fromError } = await resolveStatewideResults();
+  const { results, source, fromError } = await resolveStatewideResults(raceId);
 
   // Only cache real results. An error-fallback should be retried on the next
   // request rather than pinning mock data for the full TTL window.
   if (!fromError) {
-    cachedResults = results;
-    cacheTimestamp = now;
+    cache.set(raceId, { results, ts: now });
   }
 
   return NextResponse.json(results, {

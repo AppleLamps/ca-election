@@ -1,3 +1,5 @@
+import type { RaceConfig } from "./races";
+
 export type Party = "D" | "R" | "I";
 
 export interface Candidate {
@@ -29,10 +31,10 @@ export interface ResultsPayload {
   projection?: ProjectionSummary;
 }
 
-// Election-night baseline gap (Becerra over Steyer). The current mock gap is
-// intentionally narrower (~0.6) to model late-counted ballots closing it; the
-// hero delta compares the live gap against this baseline.
-export const BASELINE_GAP = 6.2;
+// Election-night baseline for the second runoff slot (Hilton over Steyer, the
+// 2nd-vs-3rd margin). Real reported figures as of the June 5, 2026 count; the
+// hero delta compares the live gap against this baseline as late ballots land.
+export const BASELINE_GAP = 5.4;
 
 export const COUNTY_LIST = [
   "Alameda", "Alpine", "Amador", "Butte", "Calaveras", "Colusa", "Contra Costa",
@@ -59,39 +61,46 @@ function seededRandom(seedStr: string) {
   };
 }
 
-// Base statewide results
+// Base statewide results. Real reported figures from the June 2, 2026 top-two
+// primary (CA Secretary of State, ~68% of vote counted as of June 5). Becerra
+// leads; the second runoff slot is a Hilton-vs-Steyer battle. The long tail of
+// minor candidates (~4.3%) is bundled into "Other candidates" so shares total
+// 100 without fabricating individual tail numbers.
 export const BASE_CANDIDATES = [
-  { name: "Steve Hilton", party: "R" as Party, basePct: 28.4 },
-  { name: "Xavier Becerra", party: "D" as Party, basePct: 18.2 },
-  { name: "Tom Steyer", party: "D" as Party, basePct: 17.6 },
-  { name: "Eleni Kounalakis", party: "D" as Party, basePct: 12.1 },
-  { name: "Rob Bonta", party: "D" as Party, basePct: 9.5 },
-  { name: "Lanhee Chen", party: "R" as Party, basePct: 7.8 },
-  { name: "Betty Yee", party: "D" as Party, basePct: 6.4 }
+  { name: "Xavier Becerra", party: "D" as Party, basePct: 26.8 },
+  { name: "Steve Hilton", party: "R" as Party, basePct: 26.4 },
+  { name: "Tom Steyer", party: "D" as Party, basePct: 21.0 },
+  { name: "Chad Bianco", party: "R" as Party, basePct: 10.8 },
+  { name: "Katie Porter", party: "D" as Party, basePct: 4.5 },
+  { name: "Matt Mahan", party: "D" as Party, basePct: 3.8 },
+  { name: "Antonio Villaraigosa", party: "D" as Party, basePct: 1.2 },
+  { name: "Tony K. Thurmond", party: "D" as Party, basePct: 0.7 },
+  { name: "Betty T. Yee", party: "D" as Party, basePct: 0.5 },
+  { name: "Other candidates", party: "I" as Party, basePct: 4.3 }
 ];
 
-export const STATEWIDE_TOTAL_VOTES = 6450000;
+export const STATEWIDE_TOTAL_VOTES = 6466000;
 
-export function getMockStatewideResults(): ResultsPayload {
-  const candidates: Candidate[] = BASE_CANDIDATES.map(c => ({
+export function getMockStatewideResults(race: RaceConfig): ResultsPayload {
+  const candidates: Candidate[] = race.baseCandidates.map(c => ({
     name: c.name,
     party: c.party,
-    votes: Math.round((c.basePct / 100) * STATEWIDE_TOTAL_VOTES),
+    votes: Math.round((c.basePct / 100) * race.totalVotes),
     pct: c.basePct
   }));
 
-  // Adjust votes to sum exactly to STATEWIDE_TOTAL_VOTES
+  // Adjust votes to sum exactly to the race total
   const sumVotes = candidates.reduce((sum, c) => sum + c.votes, 0);
-  const diff = STATEWIDE_TOTAL_VOTES - sumVotes;
+  const diff = race.totalVotes - sumVotes;
   if (diff !== 0) {
     candidates[0].votes += diff;
   }
 
   return {
-    asOf: "June 3, 2026 12:45 AM PT",
-    pctReporting: "94.2%",
-    source: "CA Secretary of State (Mock)",
-    note: "Semi-official results. Mail-in ballots postmarked by Election Day are still being processed.",
+    asOf: race.mockAsOf,
+    pctReporting: race.mockPctReporting,
+    source: race.mockSource,
+    note: race.mockNote,
     candidates: candidates.sort((a, b) => b.votes - a.votes),
     synthetic: true
   };

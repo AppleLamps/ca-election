@@ -1,5 +1,5 @@
-import { NextResponse } from "next/server";
-import { KV_TREND_KEY } from "@/lib/constants";
+import { NextRequest, NextResponse } from "next/server";
+import { getRace } from "@/lib/races";
 
 export const dynamic = "force-dynamic";
 
@@ -43,7 +43,9 @@ function safeParseTrendItem(item: unknown): TrendPoint | null {
   }
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const race = getRace(new URL(request.url).searchParams.get("race"));
+
   const kvUrl = process.env.KV_REST_API_URL;
   const kvToken = process.env.KV_REST_API_TOKEN;
 
@@ -57,8 +59,8 @@ export async function GET() {
   try {
     const { kv } = await import("@vercel/kv");
 
-    // Retrieve all items from the list
-    const rawTrend = await kv.lrange(KV_TREND_KEY, 0, -1);
+    // Retrieve all items from this race's list
+    const rawTrend = await kv.lrange(race.kvTrendKey, 0, -1);
 
     // Parse items defensively. Keep valid points even if one KV entry is malformed.
     const trend = rawTrend

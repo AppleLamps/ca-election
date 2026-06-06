@@ -115,6 +115,46 @@ h1, h2, h3, h4, h5, h6 {
   gap: 24px;
 }
 
+/* Race Tabs */
+.race-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.race-tab {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-bottom: none;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 8px 18px;
+  cursor: pointer;
+  transition: color 0.15s, background-color 0.15s, border-color 0.15s;
+}
+
+.race-tab:hover {
+  color: var(--text);
+  background-color: rgba(242, 168, 58, 0.06);
+}
+
+.race-tab.active {
+  color: var(--amber);
+  border-color: var(--amber);
+  background-color: rgba(242, 168, 58, 0.1);
+  box-shadow: inset 0 -2px 0 var(--amber);
+}
+
+.race-tab:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: -2px;
+}
+
 /* Masthead Styles */
 .masthead {
   border-bottom: 2px solid var(--line);
