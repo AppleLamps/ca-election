@@ -36,11 +36,15 @@ export function parsePct(raw: unknown): number {
   return Math.min(100, Math.max(0, n));
 }
 
-// Resolve a candidate by case-insensitive name substring (e.g. "becerra").
-export function findCandidate<T extends { name: string }>(
-  candidates: T[],
-  nameSub: string
-): T | undefined {
-  const needle = nameSub.toLowerCase();
-  return candidates.find(c => c.name.toLowerCase().includes(needle));
+/**
+ * Parse a reporting percentage (e.g. "94.2%", "94.2", 94.2) into a fraction in
+ * [0, 1]. Used by the statistical layer to estimate remaining ballots; keeping it
+ * here means the same coercion (%-stripping, clamping) as the other helpers.
+ */
+export function parseReportingFraction(raw: unknown): number {
+  let n = 0;
+  if (typeof raw === "number") n = raw;
+  else if (typeof raw === "string") n = parseFloat(raw.replace(/%/g, ""));
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(1, Math.max(0, n / 100));
 }

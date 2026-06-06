@@ -79,7 +79,8 @@ export async function fetchAndParseFeed(url: string): Promise<ResultsPayload> {
       pctReporting,
       source,
       note,
-      candidates
+      candidates,
+      synthetic: false
     };
   }
 
@@ -132,6 +133,7 @@ export async function fetchAndParseFeed(url: string): Promise<ResultsPayload> {
     pctReporting,
     source,
     note,
-    candidates
+    candidates,
+    synthetic: false
   };
 }

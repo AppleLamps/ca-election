@@ -7,12 +7,26 @@ export interface Candidate {
   pct: number;
 }
 
+export interface ProjectionSummary {
+  gap: number; // observed runoff gap, points
+  ci95: number; // 95% interval half-width, points
+  z: number; // margin-of-safety Z-score
+  label: string; // "Safe" | "Lean" | "Too close to call"
+  projectedGap: number; // skew-aware projected final gap, points (signed)
+}
+
 export interface ResultsPayload {
   asOf: string;
   pctReporting: string;
   source: string;
   note: string;
   candidates: Candidate[];
+  // True when the numbers are generated/mock rather than from a real feed. The
+  // snapshot cron refuses to log synthetic data into the historical trend.
+  synthetic: boolean;
+  // Point-in-time statistical summary of the runoff battle. Optional: county
+  // drill-downs and legacy payloads omit it.
+  projection?: ProjectionSummary;
 }
 
 // Election-night baseline gap (Becerra over Steyer). The current mock gap is
@@ -78,7 +92,8 @@ export function getMockStatewideResults(): ResultsPayload {
     pctReporting: "94.2%",
     source: "CA Secretary of State (Mock)",
     note: "Semi-official results. Mail-in ballots postmarked by Election Day are still being processed.",
-    candidates: candidates.sort((a, b) => b.votes - a.votes)
+    candidates: candidates.sort((a, b) => b.votes - a.votes),
+    synthetic: true
   };
 }
 
@@ -174,7 +189,8 @@ export function getMockCountyResults(countyName: string): ResultsPayload {
   // Normalize shares to sum to 100%
   const totalShare = rawShares.reduce((sum, c) => sum + c.share, 0);
   const candidates: Candidate[] = rawShares.map(c => {
-    const pct = Number(((c.share / totalShare) * 100).toFixed(1));
+    // Keep full precision internally; the UI rounds at display time.
+    const pct = (c.share / totalShare) * 100;
     return {
       name: c.name,
       party: c.party,
@@ -195,9 +211,10 @@ export function getMockCountyResults(countyName: string): ResultsPayload {
     }
   }
 
-  // Recalculate percentages based on final votes to ensure consistency
+  // Recalculate percentages based on final votes to ensure consistency.
+  // Full precision internally; the UI rounds at display time.
   candidates.forEach(c => {
-    c.pct = Number(((c.votes / profile.votes) * 100).toFixed(1));
+    c.pct = (c.votes / profile.votes) * 100;
   });
 
   // Sort candidates by votes descending
@@ -213,6 +230,7 @@ export function getMockCountyResults(countyName: string): ResultsPayload {
     pctReporting: pctReportingStr,
     source: "CA Secretary of State (Mock)",
     note: `County results synthesized. Mail-in ballots processing in ${matchedCounty} County.`,
-    candidates
+    candidates,
+    synthetic: true
   };
 }

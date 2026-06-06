@@ -2,19 +2,28 @@
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { ResultsPayload, COUNTY_LIST, BASELINE_GAP } from "@/lib/mockResults";
-import { findCandidate } from "@/lib/parsing";
 import { LOCAL_TREND_KEY } from "@/lib/constants";
+import { runoffGap, analyzeStatewide } from "@/lib/projection";
+import { parseReportingFraction } from "@/lib/parsing";
+
+type TrendPoint = {
+  gap: number;
+  t: string;
+  ci95?: number;
+  projectedGap?: number;
+};
 
 export default function Dashboard() {
   // State
   const [statewideResults, setStatewideResults] = useState<ResultsPayload | null>(null);
   const [currentResults, setCurrentResults] = useState<ResultsPayload | null>(null);
   const [selectedCounty, setSelectedCounty] = useState<string>("");
-  const [trendPoints, setTrendPoints] = useState<{ gap: number; t: string }[]>([]);
+  const [trendPoints, setTrendPoints] = useState<TrendPoint[]>([]);
   const [isKvEnabled, setIsKvEnabled] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
   const [countyLoading, setCountyLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [countyError, setCountyError] = useState<string | null>(null);
   const [lastFetched, setLastFetched] = useState<string>("");
   const [autoRefresh, setAutoRefresh] = useState<boolean>(false);
 
@@ -37,18 +46,26 @@ export default function Dashboard() {
       if (!res.ok) throw new Error("Failed to fetch trend");
       const data = await res.json();
 
-      const becerra = findCandidate(currentStatewide.candidates, "becerra");
-      const steyer = findCandidate(currentStatewide.candidates, "steyer");
-      const currentGap = becerra && steyer ? Number((becerra.pct - steyer.pct).toFixed(1)) : 0.6;
+      // Gap = margin holding the second runoff slot (2nd place minus 3rd place).
+      // Candidates arrive sorted by votes descending, so this is derived from the
+      // standings, not tied to any specific candidate name. Same source of truth
+      // the server uses (runoffGap), and the per-point statistical fields come
+      // from analyzeStatewide so the local fallback matches the KV series shape.
+      const gapInfo = runoffGap(currentStatewide.candidates);
+      const analysis = analyzeStatewide(
+        currentStatewide.candidates,
+        parseReportingFraction(currentStatewide.pctReporting)
+      );
+      const currentGap = gapInfo ? Number(gapInfo.gap.toFixed(2)) : 0;
 
       if (data.kvEnabled && data.trend && data.trend.length > 0) {
         setIsKvEnabled(true);
-        setTrendPoints(data.trend);
+        setTrendPoints(data.trend as TrendPoint[]);
       } else {
         // Fallback to localStorage
         setIsKvEnabled(false);
         const localTrendStr = localStorage.getItem(LOCAL_TREND_KEY);
-        let localTrend: { gap: number; t: string }[] = [];
+        let localTrend: TrendPoint[] = [];
 
         if (localTrendStr) {
           try {
@@ -60,29 +77,18 @@ export default function Dashboard() {
           }
         }
 
-        if (localTrend.length === 0) {
-          // Pre-populate with realistic historical points starting from baseline gap (6.2)
-          const now = Date.now();
-          const basePoints = [
-            { gap: BASELINE_GAP, t: new Date(now - 1000 * 60 * 60 * 12).toISOString() }, // 12h ago
-            { gap: 5.8, t: new Date(now - 1000 * 60 * 60 * 10).toISOString() },
-            { gap: 5.1, t: new Date(now - 1000 * 60 * 60 * 8).toISOString() },
-            { gap: 4.5, t: new Date(now - 1000 * 60 * 60 * 6).toISOString() },
-            { gap: 3.8, t: new Date(now - 1000 * 60 * 60 * 5).toISOString() },
-            { gap: 3.2, t: new Date(now - 1000 * 60 * 60 * 4).toISOString() },
-            { gap: 2.5, t: new Date(now - 1000 * 60 * 60 * 3).toISOString() },
-            { gap: 1.9, t: new Date(now - 1000 * 60 * 60 * 2).toISOString() },
-            { gap: 1.2, t: new Date(now - 1000 * 60 * 60 * 1).toISOString() }
-          ];
-          localTrend = basePoints;
-        }
-
-        // Check if the last point is already our current gap to avoid duplicates
+        // Append only real, observed gaps. No synthetic history: the chart stays
+        // in its empty state until 2+ genuine snapshots have accumulated. The CI
+        // and projected gap are stored per point so the local series renders the
+        // same band and projection line as the KV series (point projection only;
+        // the Kalman smoothing lives server-side).
         const lastPoint = localTrend[localTrend.length - 1];
-        if (!lastPoint || Math.abs(lastPoint.gap - currentGap) > 0.01 || localTrend.length < 10) {
+        if (!lastPoint || Math.abs(lastPoint.gap - currentGap) > 0.01) {
           localTrend.push({
             gap: currentGap,
-            t: new Date().toISOString()
+            t: new Date().toISOString(),
+            ci95: analysis ? Number(analysis.ci95.toFixed(2)) : undefined,
+            projectedGap: analysis ? Number(analysis.projectedGap.toFixed(2)) : undefined
           });
           // Cap at last 50 points for local storage to keep it lightweight
           if (localTrend.length > 50) {
@@ -130,6 +136,7 @@ export default function Dashboard() {
   // Fetch county results
   const fetchCountyResults = useCallback(async (county: string) => {
     setCountyLoading(true);
+    setCountyError(null);
     try {
       const res = await fetch(`/api/results/county?name=${encodeURIComponent(county)}`);
       if (!res.ok) throw new Error(`County fetch failed: ${res.statusText}`);
@@ -137,7 +144,8 @@ export default function Dashboard() {
       setCurrentResults(data);
     } catch (err) {
       console.error(`Error fetching county ${county} results:`, err);
-      // Fallback: keep current results or show error message
+      // Non-blocking: surface a notice and keep the previously shown results.
+      setCountyError(`Could not load ${county}. Showing the previous view.`);
     } finally {
       setCountyLoading(false);
     }
@@ -155,6 +163,7 @@ export default function Dashboard() {
     if (county) {
       fetchCountyResults(county);
     } else if (statewideResults) {
+      setCountyError(null);
       setCurrentResults(statewideResults);
     }
   };
@@ -162,6 +171,7 @@ export default function Dashboard() {
   // Reset to Statewide
   const handleResetStatewide = () => {
     setSelectedCounty("");
+    setCountyError(null);
     if (statewideResults) {
       setCurrentResults(statewideResults);
     }
@@ -186,39 +196,62 @@ export default function Dashboard() {
     };
   }, [autoRefresh, fetchResults]);
 
-  // Calculations for Hero Gap (ALWAYS based on statewide results)
+  // Calculations for Hero Gap. ALWAYS based on statewide results, and derived
+  // from the standings (2nd place vs 3rd place) rather than hardcoded names, so
+  // it works regardless of which candidates lead. Returns null when the battle
+  // cannot be computed (fewer than three candidates); the loading skeleton is
+  // gated separately on statewideResults being null.
   const getHeroData = () => {
     if (!statewideResults) return null;
 
-    const becerra = findCandidate(statewideResults.candidates, "becerra");
-    const steyer = findCandidate(statewideResults.candidates, "steyer");
+    const gapInfo = runoffGap(statewideResults.candidates);
+    if (!gapInfo) return null;
 
-    if (!becerra || !steyer) return null;
+    // Prefer the server-computed statistical summary; fall back to recomputing
+    // on the client if an older payload omits it.
+    const projection =
+      statewideResults.projection ||
+      analyzeStatewide(
+        statewideResults.candidates,
+        parseReportingFraction(statewideResults.pctReporting)
+      );
 
-    const currentGap = Number((becerra.pct - steyer.pct).toFixed(1));
+    // Margin holding the second runoff slot. Standings are sorted descending,
+    // so this is non-negative.
+    const currentGap = gapInfo.gap;
     const delta = Number((currentGap - BASELINE_GAP).toFixed(1));
 
     let deltaClass = "delta-neutral";
     let deltaText = "Flat vs baseline";
-    let deltaArrow = "■";
+    let deltaArrow = "=";
 
     if (currentGap < BASELINE_GAP) {
       deltaClass = "delta-climbing";
-      deltaText = "Steyer climbing";
+      deltaText = `${gapInfo.thirdName} closing`;
       deltaArrow = "▼";
     } else if (currentGap > BASELINE_GAP) {
       deltaClass = "delta-widening";
-      deltaText = "Becerra pulling away";
+      deltaText = `${gapInfo.secondName} pulling away`;
       deltaArrow = "▲";
     }
 
+    // Margin-of-safety class keyed off the label for color treatment.
+    const label = projection?.label ?? "";
+    const safetyClass =
+      label === "Safe" ? "safety-safe" : label === "Lean" ? "safety-lean" : "safety-tossup";
+
     return {
       gap: Math.abs(currentGap),
-      leader: currentGap >= 0 ? "Becerra" : "Steyer",
+      leader: gapInfo.secondName,
       delta: Math.abs(delta),
       deltaClass,
       deltaText,
-      deltaArrow
+      deltaArrow,
+      ci95: projection?.ci95,
+      z: projection?.z,
+      safetyLabel: label,
+      safetyClass,
+      projectedGap: projection?.projectedGap
     };
   };
 
@@ -244,7 +277,9 @@ export default function Dashboard() {
   const drawSparkline = () => {
     if (trendPoints.length < 2) {
       return (
-        <div className="sparkline-svg-wrapper skeleton-shimmer" style={{ height: "80px" }} />
+        <div className="sparkline-svg-wrapper sparkline-empty">
+          <span>Collecting live data...</span>
+        </div>
       );
     }
 
@@ -252,27 +287,82 @@ export default function Dashboard() {
     const height = 80;
     const padding = 10;
 
-    const gaps = trendPoints.map(p => p.gap);
-    const minGap = Math.min(...gaps, BASELINE_GAP) - 0.5;
-    const maxGap = Math.max(...gaps, BASELINE_GAP) + 0.5;
+    // Build the value range from everything we draw: observed gaps, the CI band
+    // extremes, the projected gaps, and the baseline reference line.
+    const values: number[] = [BASELINE_GAP];
+    for (const p of trendPoints) {
+      values.push(p.gap);
+      if (p.ci95 !== undefined) {
+        values.push(p.gap + p.ci95, p.gap - p.ci95);
+      }
+      if (p.projectedGap !== undefined) {
+        values.push(p.projectedGap);
+      }
+    }
+    const minGap = Math.min(...values) - 0.5;
+    const maxGap = Math.max(...values) + 0.5;
+    const span = maxGap - minGap || 1;
 
-    const pointsStr = trendPoints.map((p, i) => {
-      const x = padding + (i / (trendPoints.length - 1)) * (width - padding * 2);
-      const y = height - padding - ((p.gap - minGap) / (maxGap - minGap)) * (height - padding * 2);
-      return `${x},${y}`;
-    }).join(" ");
+    const xOf = (i: number) =>
+      padding + (i / (trendPoints.length - 1)) * (width - padding * 2);
+    const yOf = (v: number) =>
+      height - padding - ((v - minGap) / span) * (height - padding * 2);
+
+    const pointsStr = trendPoints.map((p, i) => `${xOf(i)},${yOf(p.gap)}`).join(" ");
+
+    // 95% confidence band: top edge left-to-right, then bottom edge back. Where a
+    // point lacks a CI (legacy data) the band collapses to the observed line.
+    const hasBand = trendPoints.some(p => p.ci95 !== undefined);
+    const bandTop = trendPoints.map((p, i) => `${xOf(i)},${yOf(p.gap + (p.ci95 ?? 0))}`);
+    const bandBottom = trendPoints
+      .map((p, i) => `${xOf(i)},${yOf(p.gap - (p.ci95 ?? 0))}`)
+      .reverse();
+    const bandStr = [...bandTop, ...bandBottom].join(" ");
+
+    // Projected (Kalman) line: only the points that carry a projection.
+    const projPoints = trendPoints
+      .map((p, i) => (p.projectedGap !== undefined ? `${xOf(i)},${yOf(p.projectedGap)}` : null))
+      .filter((s): s is string => s !== null);
 
     // Baseline Y coordinate
-    const baselineY = height - padding - ((BASELINE_GAP - minGap) / (maxGap - minGap)) * (height - padding * 2);
+    const baselineY = yOf(BASELINE_GAP);
 
     // Last point coordinates
     const lastPoint = trendPoints[trendPoints.length - 1];
-    const lastX = width - padding;
-    const lastY = height - padding - ((lastPoint.gap - minGap) / (maxGap - minGap)) * (height - padding * 2);
+    const lastX = xOf(trendPoints.length - 1);
+    const lastY = yOf(lastPoint.gap);
+
+    const firstGap = trendPoints[0].gap;
+    const direction =
+      lastPoint.gap > firstGap ? "widening" : lastPoint.gap < firstGap ? "narrowing" : "flat";
+    const projText =
+      lastPoint.projectedGap !== undefined
+        ? ` Projected final margin ${lastPoint.projectedGap.toFixed(1)} percent.`
+        : "";
+    const ciText =
+      lastPoint.ci95 !== undefined
+        ? ` 95 percent interval plus or minus ${lastPoint.ci95.toFixed(1)} points.`
+        : "";
+    const chartLabel = `Runoff-margin trend, ${direction}. Current margin ${lastPoint.gap.toFixed(
+      1
+    )} percent against an election-night baseline of ${BASELINE_GAP} percent.${ciText}${projText}`;
 
     return (
       <div className="sparkline-svg-wrapper">
-        <svg viewBox={`0 0 ${width} ${height}`} className="sparkline-svg" style={{ width: "100%", height: "100%", display: "block" }}>
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          className="sparkline-svg"
+          style={{ width: "100%", height: "100%", display: "block" }}
+          role="img"
+          aria-label={chartLabel}
+        >
+          <title>{chartLabel}</title>
+
+          {/* 95% confidence band */}
+          {hasBand && (
+            <polygon points={bandStr} fill="var(--amber)" fillOpacity="0.15" stroke="none" />
+          )}
+
           {/* Baseline reference line */}
           <line
             x1={padding}
@@ -284,7 +374,19 @@ export default function Dashboard() {
             strokeDasharray="3,3"
           />
 
-          {/* Sparkline path */}
+          {/* Projected final-margin line (dashed) */}
+          {projPoints.length >= 2 && (
+            <polyline
+              fill="none"
+              stroke="var(--amber)"
+              strokeWidth="1.5"
+              strokeOpacity="0.7"
+              strokeDasharray="4,3"
+              points={projPoints.join(" ")}
+            />
+          )}
+
+          {/* Observed sparkline path */}
           <polyline
             fill="none"
             stroke="var(--amber)"
@@ -303,7 +405,7 @@ export default function Dashboard() {
           />
         </svg>
         <span className="sparkline-label">
-          {isKvEnabled ? "KV Live History" : "Session Only"}
+          {isKvEnabled ? "Live history" : "This session only"}
         </span>
       </div>
     );
@@ -321,7 +423,7 @@ export default function Dashboard() {
         <div className="masthead-top">
           <div className="title-group">
             <h1 className="main-title">California Governor 2026 Primary Tracker</h1>
-            <div className="live-indicator" aria-label="Live feed active">
+            <div className="live-indicator" aria-hidden="true">
               <div className="live-dot" />
               <span>Live</span>
             </div>
@@ -336,7 +438,11 @@ export default function Dashboard() {
               aria-label="Refresh results now"
             >
               <span>Refresh Now</span>
-              <span className="mono-tabular" style={{ fontSize: "10px", opacity: 0.8 }}>
+              <span
+                className="mono-tabular"
+                style={{ fontSize: "10px", opacity: 0.8 }}
+                aria-live="polite"
+              >
                 {loading || countyLoading ? "..." : `[${lastFetched || "00:00:00"}]`}
               </span>
             </button>
@@ -365,7 +471,7 @@ export default function Dashboard() {
             </div>
             <div className="meta-item">
               <span className="meta-label">Reporting:</span>
-              <span className="meta-value mono-tabular">
+              <span className="meta-value mono-tabular" aria-live="polite">
                 {loading ? "..." : currentResults?.pctReporting || "0%"}
               </span>
             </div>
@@ -401,8 +507,12 @@ export default function Dashboard() {
             {/* County Drilldown */}
             <section className="card county-drilldown">
               <h2 className="card-title">County Drill-Down</h2>
+              <label htmlFor="county-select" className="control-label">
+                View results by county
+              </label>
               <div className="drilldown-controls">
                 <select
+                  id="county-select"
                   className="county-select"
                   value={selectedCounty}
                   onChange={handleCountyChange}
@@ -424,6 +534,11 @@ export default function Dashboard() {
                   Reset to Statewide
                 </button>
               </div>
+              {countyError && (
+                <p className="county-notice" role="alert">
+                  {countyError}
+                </p>
+              )}
             </section>
 
             {/* Top Two Banner */}
@@ -474,7 +589,9 @@ export default function Dashboard() {
                             {candidate.name}
                           </span>
                           {isPromoted && (
-                            <span className="advances-badge">Advances</span>
+                            <span className="advances-badge">
+                              Advances<span className="sr-only"> to the November runoff</span>
+                            </span>
                           )}
                         </div>
                         <div className="bar-col" aria-hidden="true">
@@ -494,7 +611,7 @@ export default function Dashboard() {
                   })
                 ) : (
                   <div style={{ textAlign: "center", padding: "40px", color: "var(--muted)" }}>
-                    No candidates found in the current results feed.
+                    No results reported yet for this view.
                   </div>
                 )}
               </div>
@@ -507,7 +624,9 @@ export default function Dashboard() {
             <section className="card hero-card" aria-live="polite">
               <div className="hero-stats">
                 <span className="hero-label">Statewide 2nd-Place Battle</span>
-                {heroData ? (
+                {!statewideResults ? (
+                  <div className="skeleton-shimmer" style={{ height: "100px", width: "100%" }} />
+                ) : heroData ? (
                   <>
                     <span className="hero-leader">
                       {heroData.leader} Leads for 2nd
@@ -518,22 +637,40 @@ export default function Dashboard() {
                       </span>
                       <span className="hero-unit">%</span>
                     </div>
+                    {heroData.ci95 !== undefined && heroData.safetyLabel && (
+                      <div className={`hero-margin ${heroData.safetyClass}`}>
+                        <span className="margin-ci mono-tabular">
+                          &plusmn;{heroData.ci95.toFixed(1)}%
+                        </span>
+                        <span className="margin-label">{heroData.safetyLabel}</span>
+                        {heroData.z !== undefined && Number.isFinite(heroData.z) && (
+                          <span className="margin-z mono-tabular">
+                            Z {heroData.z.toFixed(1)}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    {heroData.projectedGap !== undefined && (
+                      <div className="hero-projection mono-tabular">
+                        Projected final: {heroData.projectedGap.toFixed(1)}%
+                      </div>
+                    )}
                     <div className={`hero-delta ${heroData.deltaClass}`}>
-                      <span className="delta-arrow">{heroData.deltaArrow}</span>
+                      <span className="delta-arrow" aria-hidden="true">{heroData.deltaArrow}</span>
                       <span className="mono-tabular">{heroData.delta.toFixed(1)}%</span>
                       <span>({heroData.deltaText})</span>
                     </div>
                   </>
                 ) : (
-                  <div className="skeleton-shimmer" style={{ height: "100px", width: "100%" }} />
+                  <div className="hero-empty">Awaiting results</div>
                 )}
               </div>
 
               {/* Sparkline */}
               <div className="sparkline-container">
                 <div className="sparkline-header">
-                  <span>Gap Trend</span>
-                  <span>Baseline: {BASELINE_GAP}%</span>
+                  <span>Runoff Margin Trend</span>
+                  <span>Election-night baseline: {BASELINE_GAP}%</span>
                 </div>
                 {drawSparkline()}
               </div>
@@ -583,7 +720,7 @@ export default function Dashboard() {
           before publishing.
         </div>
         <div className="disclaimer-item">
-          California counts mail-in and provisional ballots for days to weeks. Late-counted ballots historically skew younger and more progressive, meaning the gap between Xavier Becerra and Tom Steyer can move significantly after election night.
+          California counts mail-in and provisional ballots for days to weeks. Late-counted ballots historically skew younger and more progressive, so the margin for the second runoff slot can move significantly after election night.
         </div>
       </footer>
     </div>

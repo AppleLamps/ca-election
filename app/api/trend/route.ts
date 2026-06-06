@@ -6,27 +6,37 @@ export const dynamic = "force-dynamic";
 type TrendPoint = {
   gap: number;
   t: string;
-  becerraPct?: number;
-  steyerPct?: number;
-  pctReporting?: string;
+  // Statistical/predictive fields (present on points written by the current
+  // snapshot route; absent on legacy points, in which case they stay undefined
+  // and the client simply omits the band/projection for those points).
+  secondName?: string;
+  thirdName?: string;
+  ci95?: number;
+  projectedGap?: number;
+  reportingFraction?: number;
 };
+
+const num = (v: unknown): number | undefined => (typeof v === "number" ? v : undefined);
+const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 
 function safeParseTrendItem(item: unknown): TrendPoint | null {
   try {
     const parsed = typeof item === "string" ? JSON.parse(item) : item;
     if (!parsed || typeof parsed !== "object") return null;
 
-    const maybePoint = parsed as Record<string, unknown>;
-    if (typeof maybePoint.gap !== "number" || typeof maybePoint.t !== "string") {
+    const p = parsed as Record<string, unknown>;
+    if (typeof p.gap !== "number" || typeof p.t !== "string") {
       return null;
     }
 
     return {
-      gap: maybePoint.gap,
-      t: maybePoint.t,
-      becerraPct: typeof maybePoint.becerraPct === "number" ? maybePoint.becerraPct : undefined,
-      steyerPct: typeof maybePoint.steyerPct === "number" ? maybePoint.steyerPct : undefined,
-      pctReporting: typeof maybePoint.pctReporting === "string" ? maybePoint.pctReporting : undefined
+      gap: p.gap,
+      t: p.t,
+      secondName: str(p.secondName),
+      thirdName: str(p.thirdName),
+      ci95: num(p.ci95),
+      projectedGap: num(p.projectedGap),
+      reportingFraction: num(p.reportingFraction)
     };
   } catch {
     return null;

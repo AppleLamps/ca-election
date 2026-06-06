@@ -1,9 +1,32 @@
 import { NextResponse } from "next/server";
 import { ResultsPayload, getMockStatewideResults } from "@/lib/mockResults";
 import { fetchAndParseFeed } from "@/lib/adapters";
-import { parseParty, parseVotes, parsePct } from "@/lib/parsing";
+import { parseParty, parseVotes, parsePct, parseReportingFraction } from "@/lib/parsing";
+import { analyzeStatewide } from "@/lib/projection";
 import { MAX_CANDIDATES } from "@/lib/constants";
 import { OpenRouter } from "@openrouter/agent";
+
+/**
+ * Attach the point-in-time statistical summary (gap, 95% interval, Z-score,
+ * skew-aware projection) so the client renders it without recomputing. Applied
+ * to every source (feed, LLM, mock) before the payload leaves the resolver.
+ */
+function withProjection(results: ResultsPayload): ResultsPayload {
+  const analysis = analyzeStatewide(
+    results.candidates,
+    parseReportingFraction(results.pctReporting)
+  );
+  if (analysis) {
+    results.projection = {
+      gap: analysis.gap,
+      ci95: analysis.ci95,
+      z: analysis.z,
+      label: analysis.label,
+      projectedGap: analysis.projectedGap,
+    };
+  }
+  return results;
+}
 
 export const dynamic = "force-dynamic";
 
@@ -36,7 +59,9 @@ interface ResultsPayload {
 }
 
 Ensure candidate votes are integers (no commas in the JSON numbers) and pct are numbers (e.g. 18.2).
-If actual 2026 results are not yet fully compiled or available, synthesize highly realistic results based on current projections where Steve Hilton (R) is leading, and Xavier Becerra (D) and Tom Steyer (D) are in a neck-and-neck battle for second place around 18% and 17.5% respectively.
+
+Do NOT fabricate, estimate, or synthesize results. If you cannot find real, sourced election results for this specific race (for example, the count has not started or no outlet has reported figures), return EXACTLY this and nothing else:
+{"unavailable": true}
 `;
 
   const result = client.callModel({
@@ -77,6 +102,13 @@ If actual 2026 results are not yet fully compiled or available, synthesize highl
 
   const parsed = JSON.parse(cleaned);
 
+  // The model signals (per the prompt) that no real results exist yet. Throw so
+  // the resolver degrades to clearly-labeled deterministic mock instead of
+  // publishing fabricated numbers attributed to a real source.
+  if (parsed.unavailable === true) {
+    throw new Error("No real results available yet (LLM reported unavailable)");
+  }
+
   if (!parsed.candidates || !Array.isArray(parsed.candidates)) {
     throw new Error("Parsed LLM JSON is missing candidates array");
   }
@@ -98,7 +130,8 @@ If actual 2026 results are not yet fully compiled or available, synthesize highl
     pctReporting: String(parsed.pctReporting || "0%"),
     source: String(parsed.source || "OpenRouter " + model),
     note: String(parsed.note || "Live results extracted via OpenRouter."),
-    candidates: candidates.sort((a: any, b: any) => b.votes - a.votes)
+    candidates: candidates.sort((a: any, b: any) => b.votes - a.votes),
+    synthetic: false
   };
 }
 
@@ -121,18 +154,18 @@ export async function resolveStatewideResults(): Promise<{
 
   try {
     if (feedUrl) {
-      return { results: await fetchAndParseFeed(feedUrl), source: "feed", fromError: false };
+      return { results: withProjection(await fetchAndParseFeed(feedUrl)), source: "feed", fromError: false };
     }
     if (openrouterApiKey) {
-      return { results: await fetchLLMResults(openrouterApiKey), source: "llm", fromError: false };
+      return { results: withProjection(await fetchLLMResults(openrouterApiKey)), source: "llm", fromError: false };
     }
-    return { results: getMockStatewideResults(), source: "mock", fromError: false };
+    return { results: withProjection(getMockStatewideResults()), source: "mock", fromError: false };
   } catch (error) {
     console.error("Error fetching live results, falling back to mock data:", error);
     // Graceful degradation: Fall back to mock results on any failure
     const results = getMockStatewideResults();
     results.note = `Fallback active. (Error fetching live data: ${error instanceof Error ? error.message : "Unknown error"})`;
-    return { results, source: "mock-fallback", fromError: true };
+    return { results: withProjection(results), source: "mock-fallback", fromError: true };
   }
 }
 
